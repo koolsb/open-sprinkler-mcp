@@ -6,7 +6,8 @@ export const JC_IDLE = {
   nbrd: 1,
   en: 1,
   rd: 0,
-  rs: 0,
+  sn1: 0,  // sensor 1 active (2.2.1 field, replaces old 'rs')
+  sn2: 0,
   rdst: 0,
   sunrise: 360,  // 6:00 AM
   sunset: 1200,  // 8:00 PM
@@ -15,7 +16,7 @@ export const JC_IDLE = {
   lswc: 1747120000,
   wto: {},
   sbits: [0],
-  ps: Array(8).fill([0, 0]) as [number, number][],
+  ps: Array(8).fill([0, 0, 0, 0]) as [number, number, number, number][],
   lrun: [0, 0, 0, 0],
   curr: 120,
   flcrt: 0,
@@ -26,7 +27,7 @@ export const JC_IDLE = {
 export const JC_RUNNING = {
   ...JC_IDLE,
   sbits: [0b00000001],
-  ps: [[1, 270], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0]] as [number, number][],
+  ps: [[1, 270, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]] as [number, number, number, number][],
   lrun: [0, 1, 300, 1747122880],
 };
 
@@ -50,8 +51,10 @@ export const JO = {
   mas2: 0,
   mton: 0,
   mtof: 0,
-  urs: 1,
-  rso: 0,   // normally closed
+  sn1t: 1,  // sensor 1 type: 1=rain sensor (2.2.1 field, replaces old 'urs')
+  sn1o: 0,  // sensor 1 normally closed (2.2.1 field, replaces old 'rso')
+  sn2t: 0,
+  sn2o: 0,
   wl: 100,
   den: 0,
   ipas: 0,
@@ -100,13 +103,15 @@ export const JP = {
   nbrd: 1,
   mnp: 40,
   pd: [
-    // Program 1: Weekly Mon/Wed/Fri, 6:00 AM, enabled, weather adj
-    // flag: enabled(1) | weatherAdj(2) | schedType_weekly(0<<4) = 0b00000011 = 3
+    // Program 1: Weekly Mon/Wed/Fri, 6:00 AM, enabled, weather adj, fixed start times
+    // flag: enabled(1) | weatherAdj(2) | schedType_weekly(0<<4) | fixedStartTimes(0<<6) = 0b00000011 = 3
     // days0: Mon=bit0, Wed=bit2, Fri=bit4 = 0b0010101 = 21
+    // bit[6]=0 → fixed start-time mode: each of start0..3 is independent (-1=disabled)
     [3, 21, 0, [360, -1, -1, -1], [300, 600, 480, 1200, 0, 0, 0, 0], 'Morning Cycle'],
-    // Program 2: Interval every 3 days, disabled, no weather adj
-    // flag: !enabled | schedType_interval(3<<4) = 0b00110000 = 48
-    [48, 3, 0, [1080, -1, -1, -1], [0, 0, 0, 720, 0, 0, 0, 0], 'Drip Evening'],
+    // Program 2: Interval every 3 days, disabled, no weather adj, fixed start times
+    // flag: !enabled(0) | schedType_interval(3<<4) | fixedStartTimes(0<<6) = 0b00110000 = 48
+    // Interval: days1=3 (every 3 days), days0=0 (starting today)
+    [48, 0, 3, [1080, -1, -1, -1], [0, 0, 0, 720, 0, 0, 0, 0], 'Drip Evening'],
   ],
 };
 
