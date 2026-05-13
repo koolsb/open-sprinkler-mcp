@@ -209,7 +209,7 @@ Lists all saved watering programs with full schedule details.
 - Optional active date range (e.g. `Jan 1 – Mar 31`)
 - Start times: up to 4 fixed times, or repeating mode (first start + interval + repeat count); supports sunrise/sunset-relative offsets (e.g. `Sunrise+15min`)
 - Per-station durations (stations with 0s duration are omitted)
-- Weather adjustment flag
+- Weather adjustment flag 
 
 ---
 
