@@ -1,0 +1,103 @@
+---
+# Secret — store OS_HOST and OS_PASSWORD as Kubernetes secrets.
+# Create with:
+#   kubectl create secret generic open-sprinkler-mcp \
+#     --from-literal=OS_HOST=192.168.1.100 \
+#     --from-literal=OS_PASSWORD=opendoor
+apiVersion: v1
+kind: Secret
+metadata:
+  name: open-sprinkler-mcp
+  namespace: default
+type: Opaque
+# stringData:
+#   OS_HOST: "192.168.1.100"
+#   OS_PASSWORD: "opendoor"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-sprinkler-mcp
+  namespace: default
+  labels:
+    app: open-sprinkler-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: open-sprinkler-mcp
+  template:
+    metadata:
+      labels:
+        app: open-sprinkler-mcp
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: open-sprinkler-mcp
+          image: ghcr.io/koolsb/open-sprinkler-mcp:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          env:
+            - name: OS_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: open-sprinkler-mcp
+                  key: OS_HOST
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: open-sprinkler-mcp
+                  key: OS_PASSWORD
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-sprinkler-mcp
+  namespace: default
+  labels:
+    app: open-sprinkler-mcp
+spec:
+  selector:
+    app: open-sprinkler-mcp
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+  type: ClusterIP
