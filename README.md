@@ -204,9 +204,10 @@ Lists all saved watering programs with full schedule details.
 
 **Output includes:**
 - Program name and enabled state
-- Schedule type: Weekly, Biweekly, Monthly, or Interval
-- Active days (for weekly schedules) or interval
-- Start times (fixed or repeating with interval/end time)
+- Schedule type: Weekly, Single-run (specific date), Monthly, or Interval
+- Active days (weekly), day-of-month, specific calendar date, or interval cadence
+- Optional active date range (e.g. `Jan 1 – Mar 31`)
+- Start times: up to 4 fixed times, or repeating mode (first start + interval + repeat count); supports sunrise/sunset-relative offsets (e.g. `Sunrise+15min`)
 - Per-station durations (stations with 0s duration are omitted)
 - Weather adjustment flag
 
