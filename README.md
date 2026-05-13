@@ -474,12 +474,12 @@ docker run -p 3000:3000 -e OS_HOST=192.168.1.100 -e OS_PASSWORD=opendoor open-sp
 
 ### GitHub Actions — Automatic Image Builds
 
-Push to `main` or `master` to trigger an automatic build and push to GHCR. The workflow produces:
+Push to `main` or `master` to trigger an automatic build and push to GHCR. When release-please publishes a GitHub Release, a second build runs to produce semver-tagged images.
 
 | Event | Tags |
 |---|---|
 | Push to `main` | `:latest`, `:main`, `:sha-<short>` |
-| Push tag `v1.2.3` | `:1.2.3`, `:1.2`, `:sha-<short>` |
+| Release published (`v1.2.3`) | `:1.2.3`, `:1.2`, `:sha-<short>` |
 | Pull request | Build only (no push) |
 
 Images are built for both `linux/amd64` and `linux/arm64`.
