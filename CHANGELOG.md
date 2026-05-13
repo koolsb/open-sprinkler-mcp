@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/koolsb/open-sprinkler-mcp/compare/open-sprinkler-mcp-v1.1.0...open-sprinkler-mcp-v1.1.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* read MCP server version from package.json instead of hardcoding ([ac3b953](https://github.com/koolsb/open-sprinkler-mcp/commit/ac3b953518c33e46668fa76b4f4428812ca8c749))
+
 ## [1.1.0](https://github.com/koolsb/open-sprinkler-mcp/compare/open-sprinkler-mcp-v1.0.2...open-sprinkler-mcp-v1.1.0) (2026-05-13)
 
 
