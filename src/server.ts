@@ -177,8 +177,9 @@ export function createMcpServer(): McpServer {
         const SCHED_TYPES = ['Weekly', 'Biweekly', 'Monthly', 'Interval'];
         const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+        const programs = (jp.pd ?? jp.pdata) as Array<[number, number, number, number[], number[], string, number[]?]>;
         for (let i = 0; i < jp.nprogs; i++) {
-          const prog = jp.pdata[i] as [number, number, number, number[], number[], string, number[]?];
+          const prog = programs[i];
           const [flag, days0, days1, startTimes, durations, name] = prog;
 
           const enabled = !!(flag & 0x01);

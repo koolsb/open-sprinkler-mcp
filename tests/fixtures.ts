@@ -99,7 +99,7 @@ export const JP = {
   nprogs: 2,
   nbrd: 1,
   mnp: 40,
-  pdata: [
+  pd: [
     // Program 1: Weekly Mon/Wed/Fri, 6:00 AM, enabled, weather adj
     // flag: enabled(1) | weatherAdj(2) | schedType_weekly(0<<4) = 0b00000011 = 3
     // days0: Mon=bit0, Wed=bit2, Fri=bit4 = 0b0010101 = 21
