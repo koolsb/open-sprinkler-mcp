@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { createRequire } from 'node:module';
 import { z } from 'zod';
 import {
   apiGet,
@@ -32,9 +33,12 @@ const WRITE_ENABLED =
   process.env.OS_READ_ONLY !== 'true' && process.env.OS_READ_ONLY !== '1';
 
 export function createMcpServer(): McpServer {
+  const require = createRequire(import.meta.url);
+  const { version } = require('../package.json') as { version: string };
+
   const server = new McpServer({
     name: 'open-sprinkler-mcp',
-    version: '1.0.2',
+    version,
   });
 
   // ── READ-ONLY TOOLS ────────────────────────────────────────────────────────
