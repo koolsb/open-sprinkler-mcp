@@ -67,7 +67,7 @@ export function createMcpServer(): McpServer {
         const hwTypes: Record<number, string> = {
           172: 'AC (24VAC)',
           220: 'DC (Latching)',
-          8: 'Latch',
+          26: 'OS-Pi',
         };
 
         const lines = [
@@ -76,7 +76,7 @@ export function createMcpServer(): McpServer {
           `Device Time:        ${formatTimestamp(jc.devt as number)}`,
           `Controller:         ${jc.en ? 'ENABLED' : 'DISABLED'}`,
           `Rain Delay:         ${rainDelay}`,
-          `Rain Sensor:        ${jc.rs ? 'ACTIVE (rain detected)' : 'Clear'}`,
+          `Rain Sensor:        ${jc.sn1 ? 'ACTIVE (rain detected)' : 'Clear'}`,
           `Weather Adjust:     ${jo.wl}%`,
           `Sunrise / Sunset:   ${minutesToTimeStr(jc.sunrise as number)} / ${minutesToTimeStr(jc.sunset as number)}`,
           `Boards:             ${jc.nbrd} (${(jc.nbrd as number) * 8} total station slots)`,
@@ -123,7 +123,7 @@ export function createMcpServer(): McpServer {
           const isMaster = isBitSet(jn.masop as number[], i);
           const isMaster2 = jn.masop2 ? isBitSet(jn.masop2 as number[], i) : false;
 
-          const ps = jc.ps as [number, number][];
+          const ps = jc.ps as [number, number, number, number][];
           const remaining = running && ps?.[i]?.[1] > 0 ? ps[i][1] : 0;
           const programId = running && ps?.[i]?.[0] > 0 ? ps[i][0] : 0;
 
@@ -138,7 +138,10 @@ export function createMcpServer(): McpServer {
           let statusStr = '';
           if (running) {
             const remStr = remaining > 0 ? `, ${formatDuration(remaining)} remaining` : '';
-            const progStr = programId > 0 ? ` via Program ${programId}` : '';
+            let progStr = '';
+            if (programId === 99) progStr = ' (Manual)';
+            else if (programId === 254 || programId === 255) progStr = ' (Run-Once)';
+            else if (programId > 0) progStr = ` via Program ${programId}`;
             statusStr = `  ← RUNNING${remStr}${progStr}`;
           }
 
@@ -174,18 +177,46 @@ export function createMcpServer(): McpServer {
         }
 
         const lines = [`=== Watering Programs (${jp.nprogs}) ===`];
-        const SCHED_TYPES = ['Weekly', 'Biweekly', 'Monthly', 'Interval'];
+        // bits[4-5]: 0=Weekly, 1=Single-run (specific date), 2=Monthly, 3=Interval-day
+        const SCHED_TYPES = ['Weekly', 'Single-run', 'Monthly', 'Interval'];
         const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+        const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        // Date restriction encoding: (month << 5) + day
+        function decodeDateRestriction(val: number): string {
+          const month = val >> 5;
+          const day = val & 0x1F;
+          return `${MONTH_NAMES[month - 1] ?? `M${month}`} ${day}`;
+        }
+
+        // Decode a single start-time slot value (16-bit, may be sunrise/sunset-relative or -1=disabled)
+        function decodeStartTimeSlot(val: number): string | null {
+          if (val < 0) return null; // bit[15] set → disabled
+          if (val & 0x4000) { // bit[14] = sunrise-based
+            const offset = val & 0x07FF;
+            const sign = (val & 0x1000) ? -1 : 1;
+            const signStr = sign > 0 ? `+${offset}` : `-${offset}`;
+            return `Sunrise${signStr}min`;
+          }
+          if (val & 0x2000) { // bit[13] = sunset-based
+            const offset = val & 0x07FF;
+            const sign = (val & 0x1000) ? -1 : 1;
+            const signStr = sign > 0 ? `+${offset}` : `-${offset}`;
+            return `Sunset${signStr}min`;
+          }
+          return minutesToTimeStr(val); // standard time (0-1439)
+        }
 
         const programs = (jp.pd ?? jp.pdata) as Array<[number, number, number, number[], number[], string, number[]?]>;
         for (let i = 0; i < jp.nprogs; i++) {
           const prog = programs[i];
-          const [flag, days0, days1, startTimes, durations, name] = prog;
+          const [flag, days0, days1, startTimes, durations, name, dateRange] = prog;
 
           const enabled = !!(flag & 0x01);
           const useWeather = !!(flag & 0x02);
           const schedType = (flag >> 4) & 0x03;
-          const startType = (flag >> 6) & 0x01;
+          // bit[6]: 0 = fixed start times (up to 4, each independent), 1 = repeating (start/count/interval)
+          const isRepeating = !!((flag >> 6) & 0x01);
 
           lines.push('');
           lines.push(`[${i + 1}] ${name ?? `Program ${i + 1}`}`);
@@ -193,29 +224,45 @@ export function createMcpServer(): McpServer {
           lines.push(`  Schedule:     ${SCHED_TYPES[schedType] ?? 'Unknown'}`);
           lines.push(`  Weather Adj:  ${useWeather ? 'Yes' : 'No'}`);
 
-          if (schedType === 0 || schedType === 1) {
-            const activeDays = DAY_NAMES.filter((_, idx) => days0 & (1 << idx));
-            lines.push(`  Days:         ${activeDays.length > 0 ? activeDays.join(', ') : 'None'}`);
-          } else if (schedType === 2) {
-            const monthDays: number[] = [];
-            for (let d = 0; d < 24; d++) {
-              if (days0 & (1 << d)) monthDays.push(d + 1);
-            }
-            lines.push(`  Days of Month: ${monthDays.length > 0 ? monthDays.join(', ') : 'None'}`);
-          } else if (schedType === 3) {
-            lines.push(`  Every:        ${days0} day${days0 === 1 ? '' : 's'}`);
-            lines.push(`  Starting in:  ${days1} day${days1 === 1 ? '' : 's'}`);
+          if (dateRange && dateRange[0] === 1 && dateRange[1] && dateRange[2]) {
+            lines.push(`  Active:       ${decodeDateRestriction(dateRange[1])} – ${decodeDateRestriction(dateRange[2])}`);
           }
 
-          if (startType === 0) {
-            const active = (startTimes as number[]).filter((t) => t >= 0).map((t) => minutesToTimeStr(t));
+          if (schedType === 0) {
+            // Weekly: days0.bits[0-6] = Mon..Sun
+            const activeDays = DAY_NAMES.filter((_, idx) => days0 & (1 << idx));
+            lines.push(`  Days:         ${activeDays.length > 0 ? activeDays.join(', ') : 'None'}`);
+          } else if (schedType === 1) {
+            // Single-run: days0 (low byte) + days1 (high byte) = days since Unix epoch
+            const dayIndex = (days1 << 8) | days0;
+            const runDate = new Date(dayIndex * 86400 * 1000);
+            const dateStr = runDate.toISOString().slice(0, 10); // YYYY-MM-DD
+            lines.push(`  Run Date:     ${dateStr}`);
+          } else if (schedType === 2) {
+            // Monthly: days0 is day of month 1-31 (0 = last day)
+            const dayLabel = days0 === 0 ? 'Last day' : `Day ${days0}`;
+            lines.push(`  Day of Month: ${dayLabel}`);
+          } else if (schedType === 3) {
+            // Interval: days1 = every N days, days0 = starting offset (remainder)
+            lines.push(`  Every:        ${days1} day${days1 === 1 ? '' : 's'}`);
+            lines.push(`  Starting in:  ${days0} day${days0 === 1 ? '' : 's'}`);
+          }
+
+          if (!isRepeating) {
+            // Fixed mode (bit[6]=0): start0..3 are independent times; -1 = disabled slot
+            const active = (startTimes as number[])
+              .map((t) => decodeStartTimeSlot(t))
+              .filter((s): s is string => s !== null);
             lines.push(`  Start Times:  ${active.length > 0 ? active.join(', ') : 'None'}`);
           } else {
-            const [startMin, repeatMin, endMin] = startTimes as number[];
-            if (startMin >= 0) {
-              lines.push(`  Starts:       ${minutesToTimeStr(startMin)}`);
-              lines.push(`  Repeats:      Every ${formatDuration(repeatMin * 60)}`);
-              lines.push(`  Until:        ${minutesToTimeStr(endMin)}`);
+            // Repeating mode (bit[6]=1): [firstTime, repeatCount, intervalMinutes, unused]
+            const [firstTime, repeatCount, intervalMin] = startTimes as number[];
+            const firstStr = decodeStartTimeSlot(firstTime);
+            if (firstStr !== null) {
+              lines.push(`  Starts:       ${firstStr}`);
+              if (repeatCount > 0 && intervalMin > 0) {
+                lines.push(`  Repeats:      Every ${formatDuration(intervalMin * 60)}, ${repeatCount} more time${repeatCount === 1 ? '' : 's'}`);
+              }
             }
           }
 
@@ -256,7 +303,7 @@ export function createMcpServer(): McpServer {
         const hwTypes: Record<number, string> = {
           172: 'AC (24VAC)',
           220: 'DC (Latching)',
-          8: 'Latch',
+          26: 'OS-Pi',
         };
 
         const lines = [
@@ -273,8 +320,8 @@ export function createMcpServer(): McpServer {
           `Sequential Mode:     ${jo.seq ? 'Yes (one station at a time)' : 'No (parallel)'}`,
           `Master Station:      ${jo.mas > 0 ? `Station ${jo.mas}` : 'None'}`,
           `Master Station 2:    ${jo.mas2 > 0 ? `Station ${jo.mas2}` : 'None'}`,
-          `Rain Sensor:         ${jo.urs ? `Enabled (${jo.rso ? 'Normally Open' : 'Normally Closed'})` : 'Disabled'}`,
-          `Sensor 2:            ${jo.sn2t !== undefined ? `Type ${jo.sn2t}` : 'N/A'}`,
+          `Sensor 1:            ${jo.sn1t > 0 && jo.sn1t !== 240 ? `Enabled (${jo.sn1o ? 'Normally Open' : 'Normally Closed'})` : 'Disabled'}`,
+          `Sensor 2:            ${jo.sn2t !== undefined && jo.sn2t > 0 && jo.sn2t !== 240 ? `Enabled (${jo.sn2o ? 'Normally Open' : 'Normally Closed'})` : 'Disabled'}`,
           `Expansion Boards:    ${jo.ext}`,
           `Logging:             ${jo.lg ? 'Enabled' : 'Disabled'}`,
           `Device ID:           ${jo.devid ?? 'N/A'}`,
@@ -310,9 +357,12 @@ export function createMcpServer(): McpServer {
           apiGet('/jn') as Promise<AnyRecord>,
         ]);
 
-        const records = Array.isArray(rawLog) ? rawLog : [];
+        const allRecords = Array.isArray(rawLog) ? rawLog : [];
 
-        if (records.length === 0) {
+        // Special events: pid=0 AND sid is a string code (rd, wl, s1, s2, fl) — not watering runs
+        const wateringRecords = allRecords.filter((r) => !(r[0] === 0 && typeof r[1] === 'string'));
+
+        if (wateringRecords.length === 0) {
           return {
             content: [
               {
@@ -323,12 +373,12 @@ export function createMcpServer(): McpServer {
           };
         }
 
-        const sorted = [...records].sort((a: number[], b: number[]) => b[3] - a[3]);
+        const sorted = [...wateringRecords].sort((a: number[], b: number[]) => b[3] - a[3]);
 
         let totalDuration = 0;
         const lines = [
           `=== Watering History — Last ${days} Day${days === 1 ? '' : 's'} ===`,
-          `Total runs: ${records.length}`,
+          `Total runs: ${wateringRecords.length}`,
           '',
           `${'Date/Time'.padEnd(24)} | ${'Station'.padEnd(24)} | ${'Duration'.padEnd(10)} | Source`,
           `${'-'.repeat(24)}-+-${'-'.repeat(24)}-+-${'-'.repeat(10)}-+--------`,
@@ -343,7 +393,7 @@ export function createMcpServer(): McpServer {
 
           let source: string;
           if (pid === 0) source = 'Manual';
-          else if (pid === 99 || pid === 255) source = 'Run-Once';
+          else if (pid === 99 || pid === 254 || pid === 255) source = 'Run-Once';
           else source = `Program ${pid}`;
 
           const flowStr = flow && flow > 0 ? `  flow:${flow}` : '';
@@ -432,10 +482,12 @@ export function createMcpServer(): McpServer {
 
         const lines = ['=== Sensor & Weather Status ==='];
 
-        if (jo.urs) {
-          lines.push(`Rain Sensor:       ${jc.rs ? 'ACTIVE (rain detected)' : 'Clear'} (${jo.rso ? 'Normally Open' : 'Normally Closed'})`);
+        if (jo.sn1t > 0 && jo.sn1t !== 240) {
+          const sn1Types: Record<number, string> = { 1: 'Rain Sensor', 2: 'Flow Sensor', 3: 'Soil Sensor' };
+          const sn1Label = sn1Types[jo.sn1t as number] ?? `Type ${jo.sn1t}`;
+          lines.push(`Sensor 1 (${sn1Label}): ${jc.sn1 ? 'ACTIVE' : 'Clear'} (${jo.sn1o ? 'Normally Open' : 'Normally Closed'})`);
         } else {
-          lines.push('Rain Sensor:       Not installed');
+          lines.push('Sensor 1:          Not configured');
         }
 
         if (jo.sn2t !== undefined && jo.sn2t > 0) {

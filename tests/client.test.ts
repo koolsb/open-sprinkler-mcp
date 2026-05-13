@@ -53,13 +53,12 @@ describe('decodeTimezone', () => {
 describe('formatTimestamp', () => {
   it('returns Never for 0', () => expect(formatTimestamp(0)).toBe('Never'));
   it('returns Never for negative', () => expect(formatTimestamp(-1)).toBe('Never'));
-  it('returns ISO-like UTC string', () => {
+  it('returns ISO-like datetime string without timezone label', () => {
     const result = formatTimestamp(1747123200);
-    expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$/);
+    expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
   it('produces consistent output for known timestamp', () => {
-    // 2025-05-13 12:00:00 UTC
-    expect(formatTimestamp(1747137600)).toBe('2025-05-13 12:00:00 UTC');
+    expect(formatTimestamp(1747137600)).toBe('2025-05-13 12:00:00');
   });
 });
 

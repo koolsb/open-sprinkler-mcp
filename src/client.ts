@@ -95,7 +95,8 @@ export function formatDuration(seconds: number): string {
 
 export function formatTimestamp(unix: number): string {
   if (!unix || unix <= 0) return 'Never';
-  return new Date(unix * 1000).toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+  // OpenSprinkler timestamps are device-local time (not UTC), so display as-is.
+  return new Date(unix * 1000).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
 }
 
 export function minutesToTimeStr(minutes: number): string {
