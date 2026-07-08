@@ -72,7 +72,7 @@ discover the authorization server, run the OAuth login, and call the server with
 | `AUTH_AUDIENCE` | No | `MCP_RESOURCE_URL` | Expected `aud` claim, if it differs from the resource URL. |
 | `AUTH_JWKS_URI` | No | *(from discovery)* | JWKS endpoint. Derived from the issuer's OIDC discovery document when omitted. |
 | `AUTH_REQUIRED_SCOPES` | No | *(none)* | Space/comma-separated scopes the token must carry. |
-| `AUTH_ALLOWED_GROUPS` | No | *(none)* | Space/comma-separated group names; if set, the token's `groups` claim must include at least one. |
+| `AUTH_ALLOWED_GROUPS` | No | *(none)* | **Comma-separated** group names (a name may contain spaces, e.g. `Kools.us Admins`); if set, the token's `groups` claim must include at least one. Requires the authorization server to emit a `groups` claim. |
 | `PUBLIC_PORT` | No | `3001` | TCP port for the authenticated public listener (only started when `AUTH_ISSUER` is set). |
 
 ---

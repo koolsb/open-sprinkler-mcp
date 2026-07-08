@@ -133,6 +133,13 @@ describe('loadAuthConfig', () => {
     expect(() => loadAuthConfig()).toThrow(/MCP_RESOURCE_URL/);
   });
 
+  it('keeps a group name that contains spaces as a single group', () => {
+    vi.stubEnv('AUTH_ISSUER', ISSUER);
+    vi.stubEnv('MCP_RESOURCE_URL', RESOURCE);
+    vi.stubEnv('AUTH_ALLOWED_GROUPS', 'Kools.us Admins, Other Group');
+    expect(loadAuthConfig()?.allowedGroups).toEqual(['Kools.us Admins', 'Other Group']);
+  });
+
   it('parses scopes and groups from delimited env vars', () => {
     vi.stubEnv('AUTH_ISSUER', ISSUER);
     vi.stubEnv('MCP_RESOURCE_URL', RESOURCE);

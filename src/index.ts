@@ -25,28 +25,36 @@ const PORT = parseInt(process.env.PORT ?? '3000', 10);
 // ── MCP request handler (stateless StreamableHTTP) ────────────────────────────
 // Each POST creates an isolated server+transport, handles the request, then tears down.
 // This is the correct pattern for stateless Kubernetes deployments.
-const handleMcpPost: RequestHandler = async (req: Request, res: Response) => {
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined, // stateless — no session persistence across requests
-  });
-
-  const server = createMcpServer();
-
-  try {
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-
-    res.on('finish', () => {
-      void transport.close();
-      void server.close();
+//
+// enableJsonResponse: when true the transport replies with a single application/json
+// body instead of an SSE (text/event-stream) stream. Plain JSON survives HTTP proxies
+// (Cloudflare, Traefik) reliably, whereas buffered SSE can break tool calls — so the
+// public listener uses JSON while the internal listener keeps the SSE default.
+function makeMcpHandler(opts: { enableJsonResponse: boolean; label: string }): RequestHandler {
+  return async (req: Request, res: Response) => {
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // stateless — no session persistence across requests
+      enableJsonResponse: opts.enableJsonResponse,
     });
-  } catch (err) {
-    console.error('[MCP] Request error:', err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Internal server error' });
+
+    const server = createMcpServer();
+
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+
+      res.on('finish', () => {
+        void transport.close();
+        void server.close();
+      });
+    } catch (err) {
+      console.error(`[MCP ${opts.label}] Request error:`, err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Internal server error' });
+      }
     }
-  }
-};
+  };
+}
 
 // GET /mcp — stateless mode does not support SSE upgrade via GET
 const handleMcpGet: RequestHandler = (_req: Request, res: Response) => {
@@ -57,31 +65,57 @@ const handleMcpGet: RequestHandler = (_req: Request, res: Response) => {
   });
 };
 
-// Builds an Express app with JSON parsing and the shared /health endpoint.
-function buildBaseApp(): express.Express {
+// Logs each request's outcome (method + JSON-RPC method + status). Used on the public
+// listener so auth rejections (401) and tool-call failures are visible in the pod logs.
+function logRequests(label: string): RequestHandler {
+  return (req: Request, res: Response, next) => {
+    res.on('finish', () => {
+      const rpc = typeof req.body?.method === 'string' ? req.body.method : '-';
+      console.log(`[MCP ${label}] ${req.method} ${req.path} rpc=${rpc} -> ${res.statusCode}`);
+    });
+    next();
+  };
+}
+
+// Builds an Express app with JSON parsing and a /health endpoint. The public listener
+// uses a minimal health body so it does not disclose the internal OpenSprinkler host.
+function buildBaseApp(opts: { detailedHealth: boolean }): express.Express {
   const app = express();
+  app.disable('x-powered-by'); // don't advertise the framework
   app.use(express.json());
   app.get('/health', (_req: Request, res: Response) => {
-    res.json({
-      status: 'ok',
-      service: 'open-sprinkler-mcp',
-      openSprinklerHost: BASE_URL,
-      timestamp: new Date().toISOString(),
-    });
+    if (opts.detailedHealth) {
+      res.json({
+        status: 'ok',
+        service: 'open-sprinkler-mcp',
+        openSprinklerHost: BASE_URL,
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      res.json({ status: 'ok' });
+    }
   });
   return app;
 }
 
 // Mounts the MCP endpoint, optionally behind auth (or any other) middleware.
-function mountMcp(app: express.Express, middleware: RequestHandler[] = []): void {
-  app.post('/mcp', ...middleware, handleMcpPost);
+function mountMcp(app: express.Express, handler: RequestHandler, middleware: RequestHandler[] = []): void {
+  app.post('/mcp', ...middleware, handler);
   app.get('/mcp', handleMcpGet);
+}
+
+// Generic 404 for anything else — avoids Express's default "Cannot GET /..." body.
+function addNotFound(app: express.Express): void {
+  app.use((_req: Request, res: Response) => {
+    res.status(404).json({ error: 'Not Found' });
+  });
 }
 
 async function main(): Promise<void> {
   // ── Internal listener (no auth) — used by in-cluster clients such as hermes ──
-  const internalApp = buildBaseApp();
-  mountMcp(internalApp);
+  const internalApp = buildBaseApp({ detailedHealth: true });
+  mountMcp(internalApp, makeMcpHandler({ enableJsonResponse: false, label: 'internal' }));
+  addNotFound(internalApp);
   internalApp.listen(PORT, () => {
     console.log(`OpenSprinkler MCP (internal, no auth) listening on port ${PORT}`);
     console.log(`Connected to OpenSprinkler at: ${BASE_URL}`);
@@ -116,7 +150,8 @@ async function startPublicListener(authCfg: NonNullable<ReturnType<typeof loadAu
   const verifier = AuthentikTokenVerifier.fromJwksUri(authCfg, jwksUri);
   const resourceServerUrl = new URL(authCfg.resourceUrl);
 
-  const publicApp = buildBaseApp();
+  const publicApp = buildBaseApp({ detailedHealth: false });
+  publicApp.use(logRequests('public'));
   // Serve protected-resource + authorization-server metadata for OAuth discovery.
   publicApp.use(
     mcpAuthMetadataRouter({
@@ -132,7 +167,8 @@ async function startPublicListener(authCfg: NonNullable<ReturnType<typeof loadAu
     requiredScopes: authCfg.requiredScopes,
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
   });
-  mountMcp(publicApp, [bearer]);
+  mountMcp(publicApp, makeMcpHandler({ enableJsonResponse: true, label: 'public' }), [bearer]);
+  addNotFound(publicApp);
 
   publicApp.listen(authCfg.publicPort, () => {
     console.log(`OpenSprinkler MCP (public, Authentik OAuth) listening on port ${authCfg.publicPort}`);
