@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/koolsb/open-sprinkler-mcp/compare/v1.3.0...v1.4.0) (2026-07-08)
+
+
+### Features
+
+* proxy-safe JSON responses on public listener + hardening ([#10](https://github.com/koolsb/open-sprinkler-mcp/issues/10)) ([bbb2cdd](https://github.com/koolsb/open-sprinkler-mcp/commit/bbb2cdd9cd9751b5cd3052bb6253ae286940b66b))
+
 ## [1.3.0](https://github.com/koolsb/open-sprinkler-mcp/compare/v1.2.0...v1.3.0) (2026-07-08)
 
 
