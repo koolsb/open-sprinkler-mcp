@@ -46,7 +46,34 @@ The server will be available at `http://localhost:3000/mcp`.
 | `OS_HOST` | **Yes** | — | Hostname, IP address, or URL of your OpenSprinkler device (e.g. `192.168.1.100`, `sprinkler.local`, or `http://192.168.1.100`) |
 | `OS_PASSWORD` | **Yes** | — | Plain-text device password. The default OpenSprinkler password is `opendoor`. The server MD5-hashes it before every API call. |
 | `OS_READ_ONLY` | No | `false` | Set to `true` or `1` to expose only read-only monitoring tools. All write/control tools are omitted from the server entirely. Useful for shared or untrusted environments. |
-| `PORT` | No | `3000` | TCP port the HTTP server listens on. |
+| `PORT` | No | `3000` | TCP port for the **internal** listener (no authentication). |
+
+---
+
+## Authentication (optional OAuth)
+
+By default the server listens on `PORT` with **no authentication** — the right choice
+for a private, in-cluster deployment where network policy already restricts access.
+
+To expose the server publicly (e.g. as a remote MCP connector for Claude), set
+`AUTH_ISSUER`. When it is set, the server starts a **second listener** on `PUBLIC_PORT`
+that acts as an OAuth 2.0 **resource server**: it requires a valid Bearer JWT issued by
+your authorization server (e.g. Authentik), verifies it against the issuer's JWKS, and
+serves protected-resource metadata for OAuth discovery. The internal `PORT` listener is
+unchanged, so in-cluster clients keep connecting without OAuth.
+
+Point Claude (or any MCP client) at `https://<host>/mcp` on the public listener; it will
+discover the authorization server, run the OAuth login, and call the server with a token.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `AUTH_ISSUER` | No | — | OAuth/OIDC issuer URL. **Setting this enables the authenticated public listener.** Must match the token `iss` claim exactly (e.g. `https://auth.example.com/application/o/open-sprinkler-mcp/`). |
+| `MCP_RESOURCE_URL` | If `AUTH_ISSUER` set | — | This server's public resource identifier, e.g. `https://open-sprinkler.mcp.example.com`. Advertised in resource metadata and expected as the token `aud`. |
+| `AUTH_AUDIENCE` | No | `MCP_RESOURCE_URL` | Expected `aud` claim, if it differs from the resource URL. |
+| `AUTH_JWKS_URI` | No | *(from discovery)* | JWKS endpoint. Derived from the issuer's OIDC discovery document when omitted. |
+| `AUTH_REQUIRED_SCOPES` | No | *(none)* | Space/comma-separated scopes the token must carry. |
+| `AUTH_ALLOWED_GROUPS` | No | *(none)* | Space/comma-separated group names; if set, the token's `groups` claim must include at least one. |
+| `PUBLIC_PORT` | No | `3001` | TCP port for the authenticated public listener (only started when `AUTH_ISSUER` is set). |
 
 ---
 
