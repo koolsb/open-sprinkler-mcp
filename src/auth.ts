@@ -28,8 +28,15 @@ export interface AuthConfig {
   publicPort: number;
 }
 
+// Scopes are whitespace- or comma-delimited (OAuth scopes never contain spaces).
 function parseList(value: string | undefined): string[] {
   return value ? value.split(/[\s,]+/).filter(Boolean) : [];
+}
+
+// Groups are comma-delimited only, since a group name may itself contain spaces
+// (e.g. "Kools.us Admins"). Splitting on whitespace would break such names.
+function parseGroupList(value: string | undefined): string[] {
+  return value ? value.split(',').map((s) => s.trim()).filter(Boolean) : [];
 }
 
 /** Reads auth config from the environment. Returns undefined when auth is disabled. */
@@ -50,7 +57,7 @@ export function loadAuthConfig(): AuthConfig | undefined {
     resourceUrl,
     jwksUri: process.env.AUTH_JWKS_URI,
     requiredScopes: parseList(process.env.AUTH_REQUIRED_SCOPES),
-    allowedGroups: parseList(process.env.AUTH_ALLOWED_GROUPS),
+    allowedGroups: parseGroupList(process.env.AUTH_ALLOWED_GROUPS),
     publicPort: parseInt(process.env.PUBLIC_PORT ?? '3001', 10),
   };
 }
