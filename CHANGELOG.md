@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/koolsb/open-sprinkler-mcp/compare/v1.2.0...v1.3.0) (2026-07-08)
+
+
+### Features
+
+* add optional Authentik OAuth resource-server auth ([#7](https://github.com/koolsb/open-sprinkler-mcp/issues/7)) ([b1b4434](https://github.com/koolsb/open-sprinkler-mcp/commit/b1b4434dfb00996e83a3d430666b9b7c226ff7a4))
+
 ## [1.2.0](https://github.com/koolsb/open-sprinkler-mcp/compare/v1.1.1...v1.2.0) (2026-05-13)
 
 
