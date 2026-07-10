@@ -19,8 +19,8 @@ import { apiGet } from '../src/client.js';
 import { createMcpServer } from '../src/server.js';
 import {
   JC_IDLE, JC_RUNNING, JC_DISABLED_RAIN,
-  JO, JN, JN_WITH_FLAGS, JS, JP, JL,
-  CV_OK, CM_OK, MP_OK, PQ_OK, CO_OK, CR_OK,
+  JO, JO_WITH_MASTER, JN, JN_WITH_FLAGS, JS, JP, JL,
+  CV_OK, CM_OK, MP_OK, PQ_OK, CO_OK, CR_OK, CP_OK, DP_OK, UP_OK, DB,
 } from './fixtures.js';
 
 const mockApiGet = vi.mocked(apiGet);
@@ -187,15 +187,89 @@ describe('get_programs', () => {
 
 describe('get_options', () => {
   it('shows firmware, hardware, and key options', async () => {
-    mockApiGet.mockResolvedValueOnce(JO);
+    mockApiGet.mockResolvedValueOnce(JO).mockResolvedValueOnce(JC_IDLE);
 
     const text = getText(await callTool('get_options'));
 
     expect(text).toContain('v221');
     expect(text).toContain('AC (24VAC)');
     expect(text).toContain('UTC+0:00');
-    expect(text).toContain('Test Sprinklers');
+    expect(text).toContain('Test Sprinklers'); // dname sourced from /jc
     expect(text).toContain('100%');
+  });
+
+  it('shows the weather method by name (not a boolean)', async () => {
+    mockApiGet.mockResolvedValueOnce(JO).mockResolvedValueOnce(JC_IDLE); // uwt: 1
+
+    const text = getText(await callTool('get_options'));
+
+    expect(text).toContain('Weather Method:      Zimmerman');
+    expect(text).not.toContain('Use Weather Adjust');
+  });
+
+  it('shows the configured location (from /jc)', async () => {
+    mockApiGet.mockResolvedValueOnce(JO).mockResolvedValueOnce(JC_IDLE);
+
+    const text = getText(await callTool('get_options'));
+
+    expect(text).toContain('Seattle,WA');
+  });
+
+  it('shows master station on/off timing when a master is set', async () => {
+    mockApiGet.mockResolvedValueOnce(JO_WITH_MASTER).mockResolvedValueOnce(JC_IDLE);
+
+    const text = getText(await callTool('get_options'));
+
+    expect(text).toContain('Master Station:      Station 1 (on 10s / off -5s)');
+  });
+});
+
+// ── get_weather_status ────────────────────────────────────────────────────────
+
+describe('get_weather_status', () => {
+  it('shows the algorithm method, water level, and decoded wto parameters', async () => {
+    mockApiGet.mockResolvedValueOnce(JC_IDLE).mockResolvedValueOnce(JO);
+
+    const text = getText(await callTool('get_weather_status'));
+
+    expect(text).toContain('Method:            Zimmerman');
+    expect(text).toContain('Current Water Lvl: 100%');
+    expect(text).toContain('Humidity weight (%)');
+    expect(text).toContain('Temperature weight (%)');
+    expect(text).toContain('Rain weight (%)');
+  });
+
+  it('shows recent watering levels and no weather error', async () => {
+    mockApiGet.mockResolvedValueOnce(JC_IDLE).mockResolvedValueOnce(JO);
+
+    const text = getText(await callTool('get_weather_status'));
+
+    expect(text).toContain('80%, 90%, 100%');
+    expect(text).toContain('Last Weather Error:   none');
+  });
+
+  it('reports a weather error code when present', async () => {
+    mockApiGet
+      .mockResolvedValueOnce({ ...JC_IDLE, wterr: -3 })
+      .mockResolvedValueOnce(JO);
+
+    const text = getText(await callTool('get_weather_status'));
+
+    expect(text).toContain('code -3');
+  });
+});
+
+// ── get_diagnostics ───────────────────────────────────────────────────────────
+
+describe('get_diagnostics', () => {
+  it('reads /db and prints the returned fields', async () => {
+    mockApiGet.mockResolvedValueOnce(DB);
+
+    const text = getText(await callTool('get_diagnostics'));
+
+    expect(mockApiGet).toHaveBeenCalledWith('/db');
+    expect(text).toContain('freemem');
+    expect(text).toContain('44280');
   });
 });
 
@@ -517,5 +591,215 @@ describe('run_once_program', () => {
     });
 
     expect(mockApiGet.mock.calls[1][1]).toMatchObject({ uwt: 1 });
+  });
+});
+
+// ── queue option (qo) ─────────────────────────────────────────────────────────
+
+describe('queue_mode', () => {
+  it('omits qo from /cm when not specified', async () => {
+    mockApiGet.mockResolvedValueOnce(CM_OK);
+
+    await callTool('run_station', { station: 1, duration: 300 });
+
+    expect(mockApiGet).toHaveBeenCalledWith('/cm', { sid: 0, en: 1, t: 300 });
+  });
+
+  it('maps run_station queue_mode=replace to qo=2', async () => {
+    mockApiGet.mockResolvedValueOnce(CM_OK);
+
+    await callTool('run_station', { station: 1, duration: 300, queue_mode: 'replace' });
+
+    expect(mockApiGet).toHaveBeenCalledWith('/cm', { sid: 0, en: 1, t: 300, qo: 2 });
+  });
+
+  it('maps run_program queue_mode=front to qo=1', async () => {
+    mockApiGet.mockResolvedValueOnce(MP_OK);
+
+    await callTool('run_program', { program: 1, queue_mode: 'front' });
+
+    expect(mockApiGet).toHaveBeenCalledWith('/mp', { pid: 0, uwt: 0, qo: 1 });
+  });
+
+  it('maps run_once_program queue_mode=append to qo=0', async () => {
+    mockApiGet.mockResolvedValueOnce(JS).mockResolvedValueOnce(CR_OK);
+
+    await callTool('run_once_program', {
+      stations: [{ station: 1, duration: 300 }],
+      queue_mode: 'append',
+    });
+
+    expect(mockApiGet.mock.calls[1][1]).toMatchObject({ qo: 0 });
+  });
+});
+
+// ── set_weather_method ────────────────────────────────────────────────────────
+
+describe('set_weather_method', () => {
+  it('maps method names to the uwt value via /co', async () => {
+    mockApiGet.mockResolvedValueOnce(CO_OK);
+
+    await callTool('set_weather_method', { method: 'eto' });
+
+    expect(mockApiGet).toHaveBeenCalledWith('/co', { uwt: 3 });
+  });
+
+  it('reports the method name in the response', async () => {
+    mockApiGet.mockResolvedValueOnce(CO_OK);
+
+    const text = getText(await callTool('set_weather_method', { method: 'zimmerman' }));
+
+    expect(text).toContain('Zimmerman');
+  });
+});
+
+// ── set_weather_options ───────────────────────────────────────────────────────
+
+describe('set_weather_options', () => {
+  it('merges provided Zimmerman keys into existing wto and strips outer braces', async () => {
+    mockApiGet.mockResolvedValueOnce(JC_IDLE).mockResolvedValueOnce(CO_OK); // wto read from /jc
+
+    await callTool('set_weather_options', { humidity_weight: 40, rain_weight: 50 });
+
+    const coCall = mockApiGet.mock.calls[1];
+    expect(coCall[0]).toBe('/co');
+    const wtoStr = (coCall[1] as Record<string, string>).wto;
+    // No outer braces in the transmitted value
+    expect(wtoStr.startsWith('{')).toBe(false);
+    const parsed = JSON.parse(`{${wtoStr}}`) as Record<string, number>;
+    expect(parsed.h).toBe(40); // updated
+    expect(parsed.r).toBe(50); // updated
+    expect(parsed.t).toBe(70); // preserved from existing wto
+  });
+
+  it('does nothing when no options are provided', async () => {
+    const text = getText(await callTool('set_weather_options', {}));
+
+    expect(text).toContain('nothing changed');
+    expect(mockApiGet).not.toHaveBeenCalled();
+  });
+});
+
+// ── create_program ────────────────────────────────────────────────────────────
+
+describe('create_program', () => {
+  it('builds a weekly program v-array and posts to /cp with pid=-1', async () => {
+    mockApiGet.mockResolvedValueOnce(JS).mockResolvedValueOnce(CP_OK);
+
+    await callTool('create_program', {
+      name: 'Morning',
+      schedule_type: 'weekly',
+      days_of_week: ['mon', 'wed', 'fri'],
+      start_times: ['06:00'],
+      stations: [{ station: 1, duration: 600 }],
+    });
+
+    const cpCall = mockApiGet.mock.calls[1];
+    expect(cpCall[0]).toBe('/cp');
+    const params = cpCall[1] as Record<string, string | number>;
+    expect(params.pid).toBe(-1);
+    expect(params.name).toBe('Morning');
+    const v = JSON.parse(params.v as string) as [number, number, number, number[], number[]];
+    // flag: enabled(1) | weekly(0<<4) = 1
+    expect(v[0]).toBe(1);
+    // days0: Mon(bit0)+Wed(bit2)+Fri(bit4) = 21
+    expect(v[1]).toBe(21);
+    // start time 06:00 = 360 minutes, rest disabled
+    expect(v[3]).toEqual([360, -1, -1, -1]);
+    // station 1 → index 0 = 600s
+    expect(v[4][0]).toBe(600);
+  });
+
+  it('encodes an interval schedule and sunset-relative start time', async () => {
+    mockApiGet.mockResolvedValueOnce(JS).mockResolvedValueOnce(CP_OK);
+
+    await callTool('create_program', {
+      name: 'Drip',
+      enabled: false,
+      use_weather: true,
+      schedule_type: 'interval',
+      interval_days: 3,
+      interval_offset: 1,
+      start_times: ['sunset-15'],
+      stations: [{ station: 2, duration: 300 }],
+    });
+
+    const v = JSON.parse((mockApiGet.mock.calls[1][1] as Record<string, string>).v) as
+      [number, number, number, number[], number[]];
+    // flag: !enabled(0) | weather(2) | interval(3<<4)=48 → 50
+    expect(v[0]).toBe(50);
+    expect(v[2]).toBe(3); // interval days
+    expect(v[1]).toBe(1); // offset
+    // sunset(0x2000) | negative(0x1000) | 15 = 0x300F = 12303
+    expect(v[3][0]).toBe(0x2000 | 0x1000 | 15);
+  });
+
+  it('errors when a weekly program has no days', async () => {
+    mockApiGet.mockResolvedValueOnce(JS);
+
+    const result = await callTool('create_program', {
+      name: 'Bad',
+      schedule_type: 'weekly',
+      start_times: ['06:00'],
+      stations: [{ station: 1, duration: 600 }],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain('at least one day');
+  });
+});
+
+// ── update_program ────────────────────────────────────────────────────────────
+
+describe('update_program', () => {
+  it('posts to /cp with the 0-based program index', async () => {
+    mockApiGet.mockResolvedValueOnce(JS).mockResolvedValueOnce(CP_OK);
+
+    await callTool('update_program', {
+      program: 2,
+      name: 'Evening',
+      schedule_type: 'weekly',
+      days_of_week: ['sat', 'sun'],
+      start_times: ['20:00'],
+      stations: [{ station: 1, duration: 300 }],
+    });
+
+    expect((mockApiGet.mock.calls[1][1] as Record<string, number>).pid).toBe(1);
+  });
+});
+
+// ── set_program_enabled ───────────────────────────────────────────────────────
+
+describe('set_program_enabled', () => {
+  it('toggles a program via /cp with the en bit', async () => {
+    mockApiGet.mockResolvedValueOnce(CP_OK);
+
+    await callTool('set_program_enabled', { program: 3, enabled: false });
+
+    expect(mockApiGet).toHaveBeenCalledWith('/cp', { pid: 2, en: 0 });
+  });
+});
+
+// ── delete_program ────────────────────────────────────────────────────────────
+
+describe('delete_program', () => {
+  it('deletes a program via /dp with the 0-based index', async () => {
+    mockApiGet.mockResolvedValueOnce(DP_OK);
+
+    await callTool('delete_program', { program: 2 });
+
+    expect(mockApiGet).toHaveBeenCalledWith('/dp', { pid: 1 });
+  });
+});
+
+// ── move_program_up ───────────────────────────────────────────────────────────
+
+describe('move_program_up', () => {
+  it('moves a program up via /up with the 0-based index', async () => {
+    mockApiGet.mockResolvedValueOnce(UP_OK);
+
+    await callTool('move_program_up', { program: 3 });
+
+    expect(mockApiGet).toHaveBeenCalledWith('/up', { pid: 2 });
   });
 });

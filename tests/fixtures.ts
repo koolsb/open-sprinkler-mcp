@@ -14,7 +14,12 @@ export const JC_IDLE = {
   eip: 0,
   lwc: 1747120000,
   lswc: 1747120000,
-  wto: {},
+  // Device name, location, and weather options are reported in /jc (not /jo).
+  dname: 'Test Sprinklers',
+  loc: 'Seattle,WA',
+  wto: { h: 30, t: 70, r: 30, bh: 30, bt: 70, br: 0 },
+  wterr: 0,
+  wls: [80, 90, 100],
   sbits: [0],
   ps: Array(8).fill([0, 0, 0, 0]) as [number, number, number, number][],
   lrun: [0, 0, 0, 0],
@@ -51,6 +56,8 @@ export const JO = {
   mas2: 0,
   mton: 0,
   mtof: 0,
+  mton2: 0,
+  mtof2: 0,
   sn1t: 1,  // sensor 1 type: 1=rain sensor (2.2.1 field, replaces old 'urs')
   sn1o: 0,  // sensor 1 normally closed (2.2.1 field, replaces old 'rso')
   sn2t: 0,
@@ -68,7 +75,15 @@ export const JO = {
   dhcp: 1,
   seq: 1,
   lg: 1,
-  dname: 'Test Sprinklers',
+  // Note: real firmware reports dname/loc/wto in /jc, not /jo (see JC_IDLE).
+};
+
+/** /jo — with a master station and adjusted on/off timing */
+export const JO_WITH_MASTER = {
+  ...JO,
+  mas: 1,
+  mton: 10,
+  mtof: -5,
 };
 
 /** /jn — 4 named stations (8 slots, rest blank) */
@@ -139,3 +154,20 @@ export const CO_OK = { result: 1 };
 
 /** /cr — success response */
 export const CR_OK = { result: 1 };
+
+/** /cp — success response */
+export const CP_OK = { result: 1 };
+
+/** /dp — success response */
+export const DP_OK = { result: 1 };
+
+/** /up — success response */
+export const UP_OK = { result: 1 };
+
+/** /db — diagnostics response */
+export const DB = {
+  fwv: 221,
+  freemem: 44280,
+  buildDate: 'May 13 2025',
+  buildTime: '10:00:00',
+};
