@@ -246,14 +246,35 @@ Returns the controller's configuration settings.
 
 **Output includes:**
 - Firmware and hardware version
-- Device name and ID
+- Device name, ID, and configured location
 - Timezone, NTP sync, DHCP/static IP
 - Water level percentage
+- **Weather adjustment method** (Manual, Zimmerman, Auto Rain Delay, ETo, or Monthly)
 - Station delay between sequential runs
 - Sequential vs. parallel mode
-- Master station assignments
+- Master station assignments with on/off timing offsets
 - Rain sensor type and configuration
 - Logging state
+
+---
+
+#### `get_weather_status`
+
+Explains how the current watering percentage is calculated.
+
+**Output includes:**
+- Weather adjustment **method** (algorithm) and current water level
+- Configured location
+- Recent multi-day watering levels (when the provider returns them)
+- **Tunable algorithm parameters** (`wto`) — e.g. Zimmerman's humidity/temperature/rain weights and baselines — with known keys labeled and any others shown raw
+- Last weather call / last successful sync times
+- Last weather-server error code (if any) and raw weather data
+
+---
+
+#### `get_diagnostics`
+
+Returns low-level device diagnostics from the controller's `/db` endpoint (firmware build info, free memory/heap, and other debug data). Useful for troubleshooting device health.
 
 ---
 
@@ -314,6 +335,7 @@ Starts a single station for a specified duration.
 |---|---|---|
 | `station` | integer (≥ 1) | Station number (1-based) |
 | `duration` | integer (1–64800) | Run duration in seconds (max 18 hours) |
+| `queue_mode` | `append` \| `front` \| `replace` | Optional. How to queue relative to existing runs: after (default), ahead, or clear-first. |
 
 ---
 
@@ -379,6 +401,7 @@ Immediately executes a saved watering program.
 |---|---|---|---|
 | `program` | integer (≥ 1) | — | Program number (1-based) |
 | `use_weather_adjustment` | boolean | `false` | Scale station durations by the current weather adjustment percentage |
+| `queue_mode` | `append` \| `front` \| `replace` | — | Optional. How to queue relative to existing runs. |
 
 ---
 
@@ -419,9 +442,102 @@ Runs a one-time custom watering sequence across any combination of stations with
 |---|---|---|---|
 | `stations` | array | — | List of `{ station, duration }` objects. Set `duration: 0` to skip a station. |
 | `use_weather_adjustment` | boolean | `false` | Apply current weather adjustment to all durations |
+| `queue_mode` | `append` \| `front` \| `replace` | — | Optional. How to queue relative to existing runs. |
 
 **Example:**
 > "Water the front lawn for 10 minutes and the drip zone for 20 minutes."
+
+---
+
+#### `set_weather_method`
+
+Sets the weather adjustment algorithm used to compute the watering percentage.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `method` | `manual` \| `zimmerman` \| `rain_delay` \| `eto` \| `monthly` | Weather adjustment method |
+
+---
+
+#### `set_weather_options`
+
+Tunes the Zimmerman algorithm's weights and baselines. Only the values you provide change; existing options are preserved (the server reads the current options, merges your changes, and writes them back).
+
+**Parameters** (all optional):
+
+| Parameter | Type | Description |
+|---|---|---|
+| `humidity_weight` | integer (0–500) | Humidity factor weight, % (`h`) |
+| `temperature_weight` | integer (0–500) | Temperature factor weight, % (`t`) |
+| `rain_weight` | integer (0–500) | Rain factor weight, % (`r`) |
+| `baseline_humidity` | integer (0–100) | Baseline humidity, % (`bh`) |
+| `baseline_temperature` | integer (0–150) | Baseline temperature, °F (`bt`) |
+| `baseline_rain` | number (0–100) | Baseline rainfall, inches (`br`) |
+
+---
+
+#### `create_program`
+
+Creates a new watering program with a weekly or interval schedule.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | — | Program name |
+| `enabled` | boolean | `true` | Whether the program is enabled |
+| `use_weather` | boolean | `false` | Apply weather adjustment to this program |
+| `schedule_type` | `weekly` \| `interval` | — | `weekly` runs on chosen weekdays; `interval` runs every N days |
+| `days_of_week` | array of `mon`…`sun` | — | Days to run (required for `weekly`) |
+| `interval_days` | integer (1–255) | — | Run every N days (required for `interval`) |
+| `interval_offset` | integer (0–254) | `0` | Days from today before the first interval run |
+| `start_times` | array of strings (1–4) | — | `"HH:MM"` (24h) or sunrise/sunset offsets like `"sunrise+15"`, `"sunset-30"` |
+| `stations` | array | — | List of `{ station, duration }` (seconds; `0` to skip) |
+
+---
+
+#### `update_program`
+
+Replaces an existing program with a new definition. Takes the same fields as `create_program` plus `program` (1-based). Supply the **full** program — use `get_programs` to see current settings first.
+
+---
+
+#### `set_program_enabled`
+
+Enables or disables a program without changing its schedule.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `program` | integer (≥ 1) | Program number (1-based) |
+| `enabled` | boolean | `true` to enable, `false` to disable |
+
+---
+
+#### `delete_program`
+
+Permanently deletes a watering program.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `program` | integer (≥ 1) | Program number to delete (1-based) |
+
+---
+
+#### `move_program_up`
+
+Moves a program one position higher in the execution/priority order.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `program` | integer (≥ 2) | Program number to move up (the first program can't move up) |
 
 ---
 
@@ -530,7 +646,7 @@ npm run test:watch
 | File | Tests | What it covers |
 |---|---|---|
 | `tests/client.test.ts` | 43 | Utility functions and `apiGet` |
-| `tests/tools.test.ts` | 42 | All 17 tool handlers end-to-end |
+| `tests/tools.test.ts` | 64 | All 26 tool handlers end-to-end |
 | `tests/write-guard.test.ts` | 8 | `OS_READ_ONLY` gating |
 
 ### `tests/client.test.ts` — utility functions and API client
@@ -560,7 +676,7 @@ Uses `vi.resetModules()` + dynamic `import()` to re-evaluate the `WRITE_ENABLED`
 
 | Scenario | Expected tool count |
 |---|---|
-| `OS_READ_ONLY` not set | 17 (all tools) |
-| `OS_READ_ONLY=true` | 7 (read-only only) |
-| `OS_READ_ONLY=1` | 7 (numeric form) |
-| `OS_READ_ONLY=false` | 17 (explicit opt-out) |
+| `OS_READ_ONLY` not set | 26 (all tools) |
+| `OS_READ_ONLY=true` | 9 (read-only only) |
+| `OS_READ_ONLY=1` | 9 (numeric form) |
+| `OS_READ_ONLY=false` | 26 (explicit opt-out) |

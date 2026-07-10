@@ -32,6 +32,68 @@ function errorResult(err: unknown) {
 const WRITE_ENABLED =
   process.env.OS_READ_ONLY !== 'true' && process.env.OS_READ_ONLY !== '1';
 
+// Weather adjustment method (jo.uwt). This is NOT a boolean — it selects which
+// algorithm the controller uses to compute the watering percentage (wl).
+const WEATHER_METHODS: Record<number, string> = {
+  0: 'Manual (no automatic adjustment)',
+  1: 'Zimmerman',
+  2: 'Auto Rain Delay',
+  3: 'Evapotranspiration (ETo)',
+  4: 'Monthly',
+};
+
+// Map the friendly method names accepted by set_weather_method to their uwt value.
+const WEATHER_METHOD_VALUES: Record<string, number> = {
+  manual: 0,
+  zimmerman: 1,
+  rain_delay: 2,
+  eto: 3,
+  monthly: 4,
+};
+
+// Friendly labels for known weather-option (wto) keys. Unknown keys are still
+// shown raw, so nothing is hidden regardless of method or weather provider.
+const WTO_LABELS: Record<string, string> = {
+  h: 'Humidity weight (%)',
+  t: 'Temperature weight (%)',
+  r: 'Rain weight (%)',
+  bh: 'Baseline humidity (%)',
+  bt: 'Baseline temperature (°F)',
+  br: 'Baseline rain (in)',
+  elevation: 'Elevation',
+  baseETo: 'Base ETo (in/day)',
+  key: 'Weather API key',
+};
+
+// Queue option (qo) shared by /cm, /mp, /cr on firmware 2.2.1+.
+const QUEUE_MODES: Record<string, number> = { append: 0, front: 1, replace: 2 };
+
+const DOW = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+// Encode a start-time string into OpenSprinkler's 16-bit slot value — the inverse
+// of the decoder used by get_programs. Accepts "HH:MM" (24-hour) or a
+// sunrise/sunset reference with an optional +/- minute offset (e.g. "sunset-15").
+export function encodeStartTimeSlot(input: string): number {
+  const s = input.trim().toLowerCase();
+  const rel = s.match(/^(sunrise|sunset)\s*([+-]\s*\d+)?$/);
+  if (rel) {
+    const base = rel[1] === 'sunrise' ? 0x4000 : 0x2000;
+    const offset = rel[2] ? parseInt(rel[2].replace(/\s+/g, ''), 10) : 0;
+    const sign = offset < 0 ? 0x1000 : 0;
+    return base | sign | (Math.abs(offset) & 0x07ff);
+  }
+  const hm = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (hm) {
+    const h = parseInt(hm[1], 10);
+    const m = parseInt(hm[2], 10);
+    if (h > 23 || m > 59) {
+      throw new Error(`Invalid time "${input}" — hours must be 0-23 and minutes 0-59.`);
+    }
+    return h * 60 + m;
+  }
+  throw new Error(`Invalid start time "${input}" — use "HH:MM", "sunrise", "sunset+30", etc.`);
+}
+
 export function createMcpServer(): McpServer {
   const require = createRequire(import.meta.url);
   const { version } = require('../package.json') as { version: string };
@@ -302,7 +364,11 @@ export function createMcpServer(): McpServer {
     },
     async () => {
       try {
-        const jo = (await apiGet('/jo')) as AnyRecord;
+        // Device name and location live in /jc (controller vars), not /jo.
+        const [jo, jc] = await Promise.all([
+          apiGet('/jo') as Promise<AnyRecord>,
+          apiGet('/jc') as Promise<AnyRecord>,
+        ]);
 
         const hwTypes: Record<number, string> = {
           172: 'AC (24VAC)',
@@ -310,20 +376,22 @@ export function createMcpServer(): McpServer {
           26: 'OS-Pi',
         };
 
+        const loc = jc.loc ?? jo.loc;
         const lines = [
           '=== Controller Options ===',
           `Firmware Version:    v${jo.fwv}`,
           `Hardware Version:    v${jo.hwv}  ${hwTypes[jo.hwt as number] ?? `(Type ${jo.hwt})`}`,
-          `Device Name:         ${jo.dname ?? '(not set)'}`,
+          `Device Name:         ${jc.dname ?? jo.dname ?? '(not set)'}`,
+          `Location:            ${loc ? loc : '(not set)'}`,
           `Timezone:            ${decodeTimezone(jo.tz as number)}`,
           `NTP Sync:            ${jo.ntp ? 'Enabled' : 'Disabled'}`,
           `DHCP:                ${jo.dhcp ? 'Enabled (DHCP)' : 'Disabled (Static IP)'}`,
-          `Water Level:         ${jo.wl}%  (weather-based adjustment)`,
-          `Use Weather Adjust:  ${jo.uwt ? 'Enabled' : 'Disabled'}`,
+          `Water Level:         ${jo.wl}%  (current weather-based adjustment)`,
+          `Weather Method:      ${WEATHER_METHODS[jo.uwt as number] ?? `Unknown (${jo.uwt})`}`,
           `Station Delay:       ${jo.sdt}s between stations`,
           `Sequential Mode:     ${jo.seq ? 'Yes (one station at a time)' : 'No (parallel)'}`,
-          `Master Station:      ${jo.mas > 0 ? `Station ${jo.mas}` : 'None'}`,
-          `Master Station 2:    ${jo.mas2 > 0 ? `Station ${jo.mas2}` : 'None'}`,
+          `Master Station:      ${jo.mas > 0 ? `Station ${jo.mas} (on ${jo.mton ?? 0}s / off ${jo.mtof ?? 0}s)` : 'None'}`,
+          `Master Station 2:    ${jo.mas2 > 0 ? `Station ${jo.mas2} (on ${jo.mton2 ?? 0}s / off ${jo.mtof2 ?? 0}s)` : 'None'}`,
           `Sensor 1:            ${jo.sn1t > 0 && jo.sn1t !== 240 ? `Enabled (${jo.sn1o ? 'Normally Open' : 'Normally Closed'})` : 'Disabled'}`,
           `Sensor 2:            ${jo.sn2t !== undefined && jo.sn2t > 0 && jo.sn2t !== 240 ? `Enabled (${jo.sn2o ? 'Normally Open' : 'Normally Closed'})` : 'Disabled'}`,
           `Expansion Boards:    ${jo.ext}`,
@@ -520,6 +588,96 @@ export function createMcpServer(): McpServer {
     },
   );
 
+  server.registerTool(
+    'get_weather_status',
+    {
+      description:
+        'Explain how the current watering percentage is calculated: the weather adjustment method (algorithm), its tunable parameters, the resulting water level, configured location, recent weather sync times, and any weather-server errors.',
+      annotations: { readOnlyHint: true },
+    },
+    async () => {
+      try {
+        const [jc, jo] = await Promise.all([
+          apiGet('/jc') as Promise<AnyRecord>,
+          apiGet('/jo') as Promise<AnyRecord>,
+        ]);
+
+        const method = WEATHER_METHODS[jo.uwt as number] ?? `Unknown (${jo.uwt})`;
+        const loc = jc.loc ?? jo.loc; // location lives in /jc
+        const lines = [
+          '=== Weather Adjustment ===',
+          `Method:            ${method}`,
+          `Current Water Lvl: ${jo.wl}%  (scales all program durations)`,
+          `Location:          ${loc ? loc : '(not set)'}`,
+        ];
+
+        // Multi-day average watering levels, when the provider returns them.
+        const wls = jc.wls as number[] | undefined;
+        if (Array.isArray(wls) && wls.length > 0) {
+          lines.push(`Recent Levels:     ${wls.map((v) => `${v}%`).join(', ')} (most recent first)`);
+        }
+
+        // Tunable algorithm parameters (wto) are reported in /jc. Decode known
+        // keys; always show the rest raw regardless of method or weather provider.
+        const wto = (jc.wto ?? jo.wto) as AnyRecord | undefined;
+        lines.push('', '--- Algorithm Parameters (wto) ---');
+        if (wto && typeof wto === 'object' && Object.keys(wto).length > 0) {
+          for (const [key, value] of Object.entries(wto)) {
+            const label = WTO_LABELS[key] ?? key;
+            const shown = key === 'key' ? '(set)' : String(value);
+            lines.push(`  ${label.padEnd(24)} ${shown}`);
+          }
+        } else if (!jo.uwt) {
+          lines.push('  None — manual mode, no automatic adjustment.');
+        } else {
+          lines.push('  (none set — using method defaults)');
+        }
+
+        lines.push('', '--- Weather Sync ---');
+        lines.push(`Last Weather Call:    ${formatTimestamp(jc.lwc as number)}`);
+        lines.push(`Last Successful Sync: ${formatTimestamp(jc.lswc as number)}`);
+        lines.push(
+          jc.wterr !== undefined && jc.wterr !== 0
+            ? `Last Weather Error:   code ${jc.wterr} (weather server returned an error on the last call)`
+            : 'Last Weather Error:   none',
+        );
+        if (jc.wtdata !== undefined) {
+          const raw = typeof jc.wtdata === 'object' ? JSON.stringify(jc.wtdata) : String(jc.wtdata);
+          lines.push(`Raw Weather Data:     ${raw}`);
+        }
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_diagnostics',
+    {
+      description:
+        'Get low-level device diagnostics from the controller (firmware build info, free memory/heap, and other debug data). Useful for troubleshooting device health.',
+      annotations: { readOnlyHint: true },
+    },
+    async () => {
+      try {
+        const db = (await apiGet('/db')) as AnyRecord;
+        if (!db || typeof db !== 'object' || Object.keys(db).length === 0) {
+          return { content: [{ type: 'text', text: 'No diagnostics data returned by the controller.' }] };
+        }
+        const lines = ['=== Device Diagnostics ==='];
+        for (const [key, value] of Object.entries(db)) {
+          if (key === 'result') continue;
+          lines.push(`  ${key.padEnd(16)} ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
   // ── WRITE TOOLS (omitted when OS_READ_ONLY=true) ───────────────────────────
 
   if (WRITE_ENABLED) {
@@ -530,12 +688,18 @@ export function createMcpServer(): McpServer {
         inputSchema: {
           station: z.number().int().min(1).describe('Station number (1-based, e.g. 1 for the first station)'),
           duration: z.number().int().min(1).max(64800).describe('Run duration in seconds (1–64800, i.e. up to 18 hours)'),
+          queue_mode: z
+            .enum(['append', 'front', 'replace'])
+            .optional()
+            .describe('How to queue this run: "append" (after existing runs, default), "front" (insert ahead), "replace" (clear the queue first).'),
         },
         annotations: { destructiveHint: false },
       },
-      async ({ station, duration }) => {
+      async ({ station, duration, queue_mode }) => {
         try {
-          await apiGet('/cm', { sid: station - 1, en: 1, t: duration });
+          const params: Record<string, number> = { sid: station - 1, en: 1, t: duration };
+          if (queue_mode) params.qo = QUEUE_MODES[queue_mode];
+          await apiGet('/cm', params);
           return { content: [{ type: 'text', text: `Station ${station} started for ${formatDuration(duration)}.` }] };
         } catch (err) {
           return errorResult(err);
@@ -664,12 +828,18 @@ export function createMcpServer(): McpServer {
             .boolean()
             .default(false)
             .describe('Apply weather-based water level adjustment to station durations'),
+          queue_mode: z
+            .enum(['append', 'front', 'replace'])
+            .optional()
+            .describe('How to queue this program: "append" (after existing runs, default), "front" (insert ahead), "replace" (clear the queue first).'),
         },
         annotations: { destructiveHint: false },
       },
-      async ({ program, use_weather_adjustment }) => {
+      async ({ program, use_weather_adjustment, queue_mode }) => {
         try {
-          await apiGet('/mp', { pid: program - 1, uwt: use_weather_adjustment ? 1 : 0 });
+          const params: Record<string, number> = { pid: program - 1, uwt: use_weather_adjustment ? 1 : 0 };
+          if (queue_mode) params.qo = QUEUE_MODES[queue_mode];
+          await apiGet('/mp', params);
           return {
             content: [{
               type: 'text',
@@ -744,10 +914,14 @@ export function createMcpServer(): McpServer {
             .boolean()
             .default(false)
             .describe('Apply weather-based water level adjustment to durations'),
+          queue_mode: z
+            .enum(['append', 'front', 'replace'])
+            .optional()
+            .describe('How to queue this run: "append" (after existing runs, default), "front" (insert ahead), "replace" (clear the queue first).'),
         },
         annotations: { destructiveHint: false },
       },
-      async ({ stations, use_weather_adjustment }) => {
+      async ({ stations, use_weather_adjustment, queue_mode }) => {
         try {
           const js = (await apiGet('/js')) as AnyRecord;
           const total = js.nstations as number;
@@ -758,7 +932,12 @@ export function createMcpServer(): McpServer {
             if (idx >= 0 && idx < total) durationArray[idx] = duration;
           }
 
-          await apiGet('/cr', { t: JSON.stringify(durationArray), uwt: use_weather_adjustment ? 1 : 0 });
+          const params: Record<string, string | number> = {
+            t: JSON.stringify(durationArray),
+            uwt: use_weather_adjustment ? 1 : 0,
+          };
+          if (queue_mode) params.qo = QUEUE_MODES[queue_mode];
+          await apiGet('/cr', params);
 
           const summary = stations
             .filter((s) => s.duration > 0)
@@ -770,6 +949,293 @@ export function createMcpServer(): McpServer {
               type: 'text',
               text: `Run-once program started: ${summary}${use_weather_adjustment ? ' (weather adjusted)' : ''}.`,
             }],
+          };
+        } catch (err) {
+          return errorResult(err);
+        }
+      },
+    );
+    server.registerTool(
+      'set_weather_method',
+      {
+        description:
+          'Set the weather adjustment algorithm the controller uses to compute the watering percentage. Options: "manual" (no adjustment), "zimmerman", "rain_delay" (auto rain delay), "eto" (evapotranspiration), "monthly".',
+        inputSchema: {
+          method: z
+            .enum(['manual', 'zimmerman', 'rain_delay', 'eto', 'monthly'])
+            .describe('Weather adjustment method'),
+        },
+        annotations: { idempotentHint: true },
+      },
+      async ({ method }) => {
+        try {
+          const uwt = WEATHER_METHOD_VALUES[method];
+          await apiGet('/co', { uwt });
+          return { content: [{ type: 'text', text: `Weather method set to ${WEATHER_METHODS[uwt]}.` }] };
+        } catch (err) {
+          return errorResult(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'set_weather_options',
+      {
+        description:
+          'Tune the Zimmerman weather algorithm parameters (weights and baselines for humidity, temperature, and rain). Only the values you provide are changed; existing options are preserved. Applies when the weather method is Zimmerman.',
+        inputSchema: {
+          humidity_weight: z.number().int().min(0).max(500).optional().describe('Humidity factor weight, % (Zimmerman "h")'),
+          temperature_weight: z.number().int().min(0).max(500).optional().describe('Temperature factor weight, % (Zimmerman "t")'),
+          rain_weight: z.number().int().min(0).max(500).optional().describe('Rain factor weight, % (Zimmerman "r")'),
+          baseline_humidity: z.number().int().min(0).max(100).optional().describe('Baseline humidity, % (Zimmerman "bh")'),
+          baseline_temperature: z.number().int().min(0).max(150).optional().describe('Baseline temperature, °F (Zimmerman "bt")'),
+          baseline_rain: z.number().min(0).max(100).optional().describe('Baseline rainfall, inches (Zimmerman "br")'),
+        },
+        annotations: { idempotentHint: true },
+      },
+      async (args) => {
+        try {
+          const keyMap: Record<string, string> = {
+            humidity_weight: 'h',
+            temperature_weight: 't',
+            rain_weight: 'r',
+            baseline_humidity: 'bh',
+            baseline_temperature: 'bt',
+            baseline_rain: 'br',
+          };
+
+          const changed: string[] = [];
+          const patch: AnyRecord = {};
+          for (const [argKey, wtoKey] of Object.entries(keyMap)) {
+            const v = (args as AnyRecord)[argKey];
+            if (v !== undefined) {
+              patch[wtoKey] = v;
+              changed.push(`${argKey}=${v}`);
+            }
+          }
+          if (changed.length === 0) {
+            return { content: [{ type: 'text', text: 'No options provided — nothing changed.' }] };
+          }
+
+          // Read current options and merge so unrelated keys (other weights, the
+          // weather API key, etc.) are preserved. wto is reported in /jc, not /jo.
+          const jc = (await apiGet('/jc')) as AnyRecord;
+          const merged =
+            jc.wto && typeof jc.wto === 'object' ? { ...(jc.wto as AnyRecord), ...patch } : patch;
+
+          // OpenSprinkler stores wto as JSON *without* the outer braces; it re-wraps
+          // them when reporting the value back via /jo and /jc.
+          const inner = JSON.stringify(merged).slice(1, -1);
+          await apiGet('/co', { wto: inner });
+          return { content: [{ type: 'text', text: `Weather options updated: ${changed.join(', ')}.` }] };
+        } catch (err) {
+          return errorResult(err);
+        }
+      },
+    );
+
+    // Shared schedule + station schema for creating and editing programs.
+    const programShape = {
+      name: z.string().min(1).max(32).describe('Program name'),
+      enabled: z.boolean().default(true).describe('Whether the program is enabled'),
+      use_weather: z
+        .boolean()
+        .default(false)
+        .describe('Apply the weather-based water level adjustment to this program'),
+      schedule_type: z
+        .enum(['weekly', 'interval'])
+        .describe('"weekly" runs on chosen days of the week; "interval" runs every N days'),
+      days_of_week: z
+        .array(z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']))
+        .optional()
+        .describe('Days to run (required for "weekly")'),
+      interval_days: z
+        .number()
+        .int()
+        .min(1)
+        .max(255)
+        .optional()
+        .describe('Run every N days (required for "interval")'),
+      interval_offset: z
+        .number()
+        .int()
+        .min(0)
+        .max(254)
+        .default(0)
+        .describe('Days from today before the first interval run (for "interval")'),
+      start_times: z
+        .array(z.string())
+        .min(1)
+        .max(4)
+        .describe('Up to 4 start times as "HH:MM" (24h) or sunrise/sunset offsets like "sunrise+15", "sunset-30"'),
+      stations: z
+        .array(
+          z.object({
+            station: z.number().int().min(1).describe('Station number (1-based)'),
+            duration: z.number().int().min(0).max(64800).describe('Run duration in seconds (0 to skip)'),
+          }),
+        )
+        .min(1)
+        .describe('Per-station run durations'),
+    };
+
+    type ProgramArgs = {
+      name: string;
+      enabled: boolean;
+      use_weather: boolean;
+      schedule_type: 'weekly' | 'interval';
+      days_of_week?: string[];
+      interval_days?: number;
+      interval_offset: number;
+      start_times: string[];
+      stations: { station: number; duration: number }[];
+    };
+
+    // Build the /cp `v` program-definition array: [flag, days0, days1, starts[4], durations[]].
+    async function buildProgramV(opts: ProgramArgs): Promise<(number | number[])[]> {
+      let days0 = 0;
+      let days1 = 0;
+      let schedType: number;
+      if (opts.schedule_type === 'weekly') {
+        schedType = 0;
+        if (!opts.days_of_week || opts.days_of_week.length === 0) {
+          throw new Error('A weekly program needs at least one day in days_of_week.');
+        }
+        for (const d of opts.days_of_week) {
+          const idx = DOW.indexOf(d);
+          if (idx >= 0) days0 |= 1 << idx;
+        }
+      } else {
+        schedType = 3; // interval
+        if (!opts.interval_days) {
+          throw new Error('An interval program needs interval_days.');
+        }
+        days1 = opts.interval_days;
+        days0 = opts.interval_offset;
+      }
+
+      // flag: bit0 enable, bit1 weather, bits4-5 schedule type, bit6=0 (fixed start times).
+      const flag =
+        (opts.enabled ? 1 : 0) | (opts.use_weather ? 2 : 0) | (schedType << 4);
+
+      const starts = [-1, -1, -1, -1];
+      opts.start_times.forEach((t, i) => {
+        if (i < 4) starts[i] = encodeStartTimeSlot(t);
+      });
+
+      const js = (await apiGet('/js')) as AnyRecord;
+      const total = js.nstations as number;
+      const durations = new Array<number>(total).fill(0);
+      for (const { station, duration } of opts.stations) {
+        const idx = station - 1;
+        if (idx >= 0 && idx < total) durations[idx] = duration;
+      }
+
+      return [flag, days0, days1, starts, durations];
+    }
+
+    server.registerTool(
+      'create_program',
+      {
+        description:
+          'Create a new watering program with a weekly or interval schedule, start times, and per-station durations.',
+        inputSchema: programShape,
+        annotations: { destructiveHint: false },
+      },
+      async (args) => {
+        try {
+          const v = await buildProgramV(args as ProgramArgs);
+          await apiGet('/cp', { pid: -1, name: (args as ProgramArgs).name, v: JSON.stringify(v) });
+          return { content: [{ type: 'text', text: `Program "${(args as ProgramArgs).name}" created.` }] };
+        } catch (err) {
+          return errorResult(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'update_program',
+      {
+        description:
+          'Replace an existing program with a new definition. All fields are required — supply the full program, not just the changed parts (use get_programs to see the current settings first).',
+        inputSchema: {
+          program: z.number().int().min(1).describe('Program number to edit (1-based)'),
+          ...programShape,
+        },
+        annotations: { destructiveHint: false, idempotentHint: true },
+      },
+      async (args) => {
+        try {
+          const { program } = args as ProgramArgs & { program: number };
+          const v = await buildProgramV(args as ProgramArgs);
+          await apiGet('/cp', {
+            pid: program - 1,
+            name: (args as ProgramArgs).name,
+            v: JSON.stringify(v),
+          });
+          return { content: [{ type: 'text', text: `Program ${program} updated.` }] };
+        } catch (err) {
+          return errorResult(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'set_program_enabled',
+      {
+        description: 'Enable or disable an existing watering program without changing its schedule.',
+        inputSchema: {
+          program: z.number().int().min(1).describe('Program number (1-based)'),
+          enabled: z.boolean().describe('true to enable, false to disable'),
+        },
+        annotations: { idempotentHint: true },
+      },
+      async ({ program, enabled }) => {
+        try {
+          await apiGet('/cp', { pid: program - 1, en: enabled ? 1 : 0 });
+          return {
+            content: [{ type: 'text', text: `Program ${program} ${enabled ? 'enabled' : 'disabled'}.` }],
+          };
+        } catch (err) {
+          return errorResult(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'delete_program',
+      {
+        description: 'Delete a watering program. This permanently removes the program from the controller.',
+        inputSchema: {
+          program: z.number().int().min(1).describe('Program number to delete (1-based)'),
+        },
+        annotations: { destructiveHint: true },
+      },
+      async ({ program }) => {
+        try {
+          await apiGet('/dp', { pid: program - 1 });
+          return { content: [{ type: 'text', text: `Program ${program} deleted.` }] };
+        } catch (err) {
+          return errorResult(err);
+        }
+      },
+    );
+
+    server.registerTool(
+      'move_program_up',
+      {
+        description:
+          'Move a program one position higher in the execution/priority order. The first program cannot be moved up.',
+        inputSchema: {
+          program: z.number().int().min(2).describe('Program number to move up (1-based; must be 2 or higher)'),
+        },
+        annotations: { idempotentHint: false },
+      },
+      async ({ program }) => {
+        try {
+          await apiGet('/up', { pid: program - 1 });
+          return {
+            content: [{ type: 'text', text: `Program ${program} moved up to position ${program - 1}.` }],
           };
         } catch (err) {
           return errorResult(err);

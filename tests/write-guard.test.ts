@@ -16,6 +16,8 @@ const READ_ONLY_TOOLS = [
   'get_watering_history',
   'get_queue_status',
   'get_sensor_status',
+  'get_weather_status',
+  'get_diagnostics',
 ];
 
 const WRITE_TOOLS = [
@@ -29,6 +31,13 @@ const WRITE_TOOLS = [
   'set_queue_paused',
   'set_water_level',
   'run_once_program',
+  'set_weather_method',
+  'set_weather_options',
+  'create_program',
+  'update_program',
+  'set_program_enabled',
+  'delete_program',
+  'move_program_up',
 ];
 
 async function getToolNames(readOnly: string | undefined): Promise<string[]> {
@@ -75,9 +84,9 @@ describe('OS_READ_ONLY not set (default)', () => {
     }
   });
 
-  it('registers exactly 17 tools', async () => {
+  it('registers exactly 26 tools', async () => {
     const names = await getToolNames(undefined);
-    expect(names).toHaveLength(17);
+    expect(names).toHaveLength(26);
   });
 });
 
@@ -96,9 +105,9 @@ describe('OS_READ_ONLY=true', () => {
     }
   });
 
-  it('registers exactly 7 tools', async () => {
+  it('registers exactly 9 tools', async () => {
     const names = await getToolNames('true');
-    expect(names).toHaveLength(7);
+    expect(names).toHaveLength(9);
   });
 });
 
