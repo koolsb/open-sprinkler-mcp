@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/koolsb/open-sprinkler-mcp/compare/v1.4.0...v1.5.0) (2026-07-10)
+
+
+### Features
+
+* add weather algorithm coverage, program management, and diagnostics tools ([#12](https://github.com/koolsb/open-sprinkler-mcp/issues/12)) ([dd6d44b](https://github.com/koolsb/open-sprinkler-mcp/commit/dd6d44b5f234bdec5855bc84cbf15ca4316921c9))
+
 ## [1.4.0](https://github.com/koolsb/open-sprinkler-mcp/compare/v1.3.0...v1.4.0) (2026-07-08)
 
 
